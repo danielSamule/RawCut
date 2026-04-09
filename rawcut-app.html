@@ -437,7 +437,7 @@ a,button,[role="button"],input,textarea,select{
 <div class="toast" id="toast"></div>
 
 <script>
-var apiKey='', vidFile=null, caps=[], segs=[];
+var apiKey='', vidFile=null, vidUrl='', caps=[], segs=[];
 
 /* THEME */
 (function(){
@@ -481,10 +481,12 @@ function drop(e){
 /* LOAD VIDEO */
 function loadVid(e){loadVid2(e.target.files[0]);}
 function loadVid2(f){
+  if(!f){return;}
+  if(vidUrl){URL.revokeObjectURL(vidUrl);}
   vidFile=f;
-  var url=URL.createObjectURL(f);
+  vidUrl=URL.createObjectURL(f);
   var v=document.getElementById('vid');
-  v.src=url;
+  v.src=vidUrl;
   document.getElementById('vidName').textContent=f.name;
   document.getElementById('zone').style.display='none';
   document.getElementById('vidWrap').classList.add('show');
@@ -494,11 +496,15 @@ function loadVid2(f){
   };
   document.getElementById('btnProc').disabled=false;
   setStatus('Video loaded \u2014 ready to process','');
-  v.addEventListener('timeupdate',syncCap);
+  v.ontimeupdate=syncCap;
 }
 function resetVid(){
   vidFile=null;caps=[];segs=[];
-  document.getElementById('vid').src='';
+  var v=document.getElementById('vid');
+  v.pause();
+  v.ontimeupdate=null;
+  v.src='';
+  if(vidUrl){URL.revokeObjectURL(vidUrl);vidUrl='';}
   document.getElementById('zone').style.display='';
   document.getElementById('vidWrap').classList.remove('show');
   document.getElementById('btnProc').disabled=true;
