@@ -375,8 +375,8 @@ a,button,[role="button"],input,textarea,select{
             <select id="modelSelect" class="sinput">
               <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash-Lite — Best for free tier (more quota)</option>
               <option value="gemini-2.0-flash" selected>Gemini 2.0 Flash — Recommended (fast + smart)</option>
-              <option value="gemini-1.5-flash">Gemini 1.5 Flash — Stable alternative</option>
-              <option value="gemini-1.5-pro">Gemini 1.5 Pro — Highest quality (slower, costs more)</option>
+              <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash — Stable alternative</option>
+              <option value="gemini-1.5-pro-latest">Gemini 1.5 Pro — Highest quality (slower, costs more)</option>
               <option value="gemini-2.5-pro-preview-03-25">Gemini 2.5 Pro — Most powerful (paid only)</option>
             </select>
           </div>
@@ -613,6 +613,10 @@ async function process(){
       return /quota exceeded|rate[- ]?limit|free_tier|429/i.test(String(msg||''));
     }
 
+    function isUnsupportedModelError(msg){
+      return /models\/.+is not found|not supported for generateContent|Call ListModels/i.test(String(msg||''));
+    }
+
     async function sendToModel(model){
       var resp=await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+apiKey,
@@ -640,9 +644,10 @@ async function process(){
       data=await sendToModel(selectedModel);
     }catch(modelErr){
       var fallbackModel='gemini-2.0-flash-lite';
-      if(isQuotaError(modelErr.message)&&selectedModel!==fallbackModel){
-        setProgress(62,'Quota hit on '+selectedModel+' - retrying '+fallbackModel+'\u2026');
-        setStatus('Quota reached on '+selectedModel+', retrying with '+fallbackModel+'\u2026','proc');
+      if((isQuotaError(modelErr.message)||isUnsupportedModelError(modelErr.message))&&selectedModel!==fallbackModel){
+        var why=isQuotaError(modelErr.message)?'Quota hit':'Model unavailable';
+        setProgress(62,why+' on '+selectedModel+' - retrying '+fallbackModel+'\u2026');
+        setStatus(why+' on '+selectedModel+', retrying with '+fallbackModel+'\u2026','proc');
         modelSelectEl.value=fallbackModel;
         selectedModel=fallbackModel;
         data=await sendToModel(fallbackModel);
@@ -690,6 +695,8 @@ async function process(){
     var msg=err&&err.message?err.message:'Unknown error';
     if(/quota exceeded|free_tier_input_token_count|free_tier_requests|rate[- ]?limit|429/i.test(msg)){
       msg='Gemini quota exceeded. Try gemini-2.0-flash-lite, wait about 1 minute, or use a paid-tier API key.';
+    } else if(/models\/.+is not found|not supported for generateContent|Call ListModels/i.test(msg)){
+      msg='Selected model is unavailable for v1beta generateContent. Switched to gemini-2.0-flash-lite; please retry.';
     }
     setStatus('Error: '+msg,'err');
     toast(msg,'err');
