@@ -149,6 +149,11 @@ a,button,[role="button"],input,textarea,select{
   font-weight:500;display:none;align-items:center;justify-content:center;gap:var(--space-2);}
 .btn-export.show{display:flex;}
 .btn-export:hover{border-color:var(--primary);color:var(--primary);}
+.btn-retry{width:100%;padding:var(--space-3);background:var(--surface2);
+  border:1px solid var(--border);border-radius:var(--radius-lg);font-size:var(--text-sm);
+  font-weight:600;display:none;align-items:center;justify-content:center;gap:var(--space-2);}
+.btn-retry.show{display:flex;}
+.btn-retry:hover{border-color:var(--warning);color:var(--warning);}
 
 /* RIGHT PANEL */
 .right-panel{display:flex;flex-direction:column;background:var(--surface);overflow:hidden;}
@@ -319,6 +324,8 @@ a,button,[role="button"],input,textarea,select{
       <div class="spin"></div>
     </button>
 
+    <button class="btn-retry" id="btnRetry" onclick="retryProcess()">Retry Last Request</button>
+
     <button class="btn-export" id="btnExp" onclick="exportSRT()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -438,6 +445,7 @@ a,button,[role="button"],input,textarea,select{
 
 <script>
 var apiKey='', vidFile=null, vidUrl='', caps=[], segs=[];
+var lastProcessError='', requestTimeoutMs=90000;
 
 /* THEME */
 (function(){
@@ -508,6 +516,7 @@ function resetVid(){
   document.getElementById('zone').style.display='';
   document.getElementById('vidWrap').classList.remove('show');
   document.getElementById('btnProc').disabled=true;
+  document.getElementById('btnRetry').classList.remove('show');
   document.getElementById('btnExp').classList.remove('show');
   document.getElementById('tEmpty').style.display='';
   document.getElementById('tBlock').style.display='none';
@@ -583,6 +592,48 @@ function setProgress(pct,lbl){
   if(lbl)document.getElementById('progLbl').textContent=lbl;
 }
 
+function parseGeminiText(data){
+  var text=(data&&data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts&&data.candidates[0].content.parts[0]&&data.candidates[0].content.parts[0].text)||'';
+  if(!text){throw new Error('Gemini returned an empty response.');}
+  text=text.replace(/^```json\s*/i,'').replace(/\s*```$/,'').trim();
+  var start=text.indexOf('{');
+  var end=text.lastIndexOf('}');
+  if(start===-1||end===-1||end<=start){
+    throw new Error('Gemini response did not contain valid JSON.');
+  }
+  return text.slice(start,end+1);
+}
+
+function normalizeResult(result){
+  if(!result||typeof result!=='object'){throw new Error('Invalid JSON payload from Gemini.');}
+  var transcript=Array.isArray(result.transcript)?result.transcript:[];
+  var captions=Array.isArray(result.captions)?result.captions:[];
+  var broll=Array.isArray(result.broll_suggestions)?result.broll_suggestions:[];
+  transcript=transcript.filter(function(item){
+    return item&&typeof item.start==='number'&&typeof item.end==='number'&&typeof item.text==='string';
+  });
+  captions=captions.filter(function(item){
+    return item&&typeof item.start==='number'&&typeof item.end==='number'&&typeof item.text==='string';
+  });
+  if(!transcript.length&&!captions.length){
+    throw new Error('Gemini returned JSON without usable transcript or caption segments.');
+  }
+  return {
+    transcript:transcript,
+    captions:captions,
+    broll_suggestions:broll,
+    restructure_notes:typeof result.restructure_notes==='string'?result.restructure_notes:'',
+    summary:typeof result.summary==='string'?result.summary:''
+  };
+}
+
+function retryProcess(){
+  if(!vidFile){toast('Load a video before retrying','err');return;}
+  if(!apiKey){openModal();return;}
+  if(lastProcessError){setStatus('Retrying request…','proc');}
+  process();
+}
+
 /* PROCESS */
 async function process(){
   var modelSelectEl=document.getElementById('modelSelect');
@@ -590,7 +641,10 @@ async function process(){
   if(!vidFile){toast('No video loaded','err');return;}
   if(!apiKey){openModal();return;}
   var btn=document.getElementById('btnProc');
+  var retryBtn=document.getElementById('btnRetry');
   btn.disabled=true;btn.classList.add('loading');
+  retryBtn.classList.remove('show');
+  lastProcessError='';
   document.getElementById('prog').classList.add('show');
   setStatus('Processing with '+selectedModel+'\u2026','proc');
 
@@ -624,14 +678,23 @@ async function process(){
     }
 
     async function sendToModel(model){
+      var controller=new AbortController();
+      var timeoutId=setTimeout(function(){controller.abort();},requestTimeoutMs);
       var resp=await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+apiKey,
         {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:reqBody
+          body:reqBody,
+          signal:controller.signal
         }
-      );
+      ).catch(function(err){
+        if(err&&err.name==='AbortError'){
+          throw new Error('Request timed out after '+Math.round(requestTimeoutMs/1000)+'s.');
+        }
+        throw err;
+      });
+      clearTimeout(timeoutId);
 
       if(!resp.ok){
         var errTxt='';
@@ -664,12 +727,12 @@ async function process(){
     }
 
     setProgress(80,'Parsing AI response\u2026');
-    var raw=(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts&&data.candidates[0].content.parts[0]&&data.candidates[0].content.parts[0].text)||'';
-    raw=raw.replace(/^```json\s*/i,'').replace(/\s*```$/,'').trim();
+    var raw=parseGeminiText(data);
 
     var result;
     try{result=JSON.parse(raw);}
     catch(e){throw new Error('Could not parse AI response. Try again.');}
+    result=normalizeResult(result);
 
     segs=result.transcript||[];
     caps=result.captions||[];
@@ -703,7 +766,11 @@ async function process(){
       msg='Gemini quota exceeded. Try gemini-2.0-flash-lite, wait about 1 minute, or use a paid-tier API key.';
     } else if(/models\/.+is not found|not supported for generateContent|Call ListModels/i.test(msg)){
       msg='Selected model is unavailable for v1beta generateContent. Switched to gemini-2.0-flash-lite; please retry.';
+    } else if(/timed out/i.test(msg)){
+      msg='Request timed out. Check your network or retry with gemini-2.0-flash-lite.';
     }
+    lastProcessError=msg;
+    retryBtn.classList.add('show');
     setStatus('Error: '+msg,'err');
     toast(msg,'err');
   }
